@@ -1,0 +1,16 @@
+fastapi[standard]
+pydantic-settings
+sqlalchemy
+alembic
+asyncpg
+psycopg2-binary
+pgvector
+langchain
+langchain-community
+langchain-ollama
+rank-bm25
+sentence-transformers
+pymupdf
+chainlit
+pyjwt
+passlib[bcrypt]

@@ -1,0 +1,36 @@
+# Environments
+venv/
+env/
+ENV/
+.env
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Chainlit
+.chainlit/chat_files/
+.chainlit/history/
+
+# Large Files & Local Models
+local_models/
+NABL_DOCUMENTS/*.pdf
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# User Data & Databases
+uploaded_files/
+*.sqlite
+*.sqlite3
+*.db
+.DS_Store
+
