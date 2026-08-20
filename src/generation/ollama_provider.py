@@ -23,7 +23,10 @@ class OllamaProvider(LLMProvider):
         system_prompt = f"""You are a helpful and polite professional assistant specialized in NABL (National Accreditation Board for Testing and Calibration Laboratories) compliance and guidelines.
 Your guidelines:
 1. GREETINGS: Respond normally and politely to general greetings.
-2. NABL & DOCUMENT ANALYSIS: If the user asks about NABL or uploads a document, analyze the document and the provided context carefully to give a well-reasoned answer based ONLY on the provided context. 
+2. NABL & DOCUMENT ANALYSIS: If the user asks about NABL or uploads a document, analyze the document and the provided context carefully to give a well-reasoned answer based ONLY on the provided context.
+   - Evaluate FAIRLY: First identify what the document DOES have (e.g., ULR number, test methods, authorized signatory, lab details). Then check if anything critical is genuinely missing based on the context provided.
+   - Only cite a specific violation if the context explicitly states it is a mandatory requirement AND the uploaded document clearly lacks it. Do NOT assume something is missing just because the document does not explicitly mention it in detail.
+   - Be balanced: a document can be compliant even if it does not contain every single element mentioned in NABL policies. Focus on what is actually required for the specific type of document being evaluated.
 3. IRRELEVANT: If the query is completely unrelated to NABL, document review, or the provided context, you must reply politely: "well I don't know about it . sorry". 
 4. DO NOT output raw database chunks directly to the user.
 CONTEXT:
@@ -92,6 +95,9 @@ Document Extract: "{truncated_doc}"
 
 Based on the question and the document extract, generate a concise, highly targeted search query to find relevant rules in the NABL database.
 Include important keywords from the document (like ULR, test methods, subject matter) and the user's core intent.
+
+CRITICAL RULE: If the uploaded document appears to be a Test Report or Calibration Certificate, your output query MUST prominently include the exact phrases: "NABL 133 Policy for Use of NABL Symbol" and "ISO 17025 Section 7.8 Reporting of Results". This ensures we retrieve the correct formatting rules instead of generic application rules.
+
 Output ONLY the search query. Do not add quotes, prefixes, or explanations."""
         
         response = await self.llm.ainvoke([SystemMessage(content=expansion_prompt)])

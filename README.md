@@ -1,4 +1,4 @@
-# NABL RAG Agent 🚧
+# NABL RAG Agent 
 
 > **Note:** This project is currently under active development.
 
@@ -9,13 +9,13 @@ An intelligent, agentic RAG (Retrieval-Augmented Generation) system built to ana
 - **Smart Document Analysis:** Upload test reports (PDFs) directly into the UI for the agent to evaluate.
 - **Agentic Query Expansion:** Intelligently extracts key rules and ULRs from uploaded documents to formulate targeted database queries.
 - **PostgreSQL Vector Database:** Uses `pgvector` and Hybrid Search (BM25 + Dense Embeddings) to retrieve precise NABL standards.
-- **Local AI Powered:** Fully local generation utilizing Ollama and `qwen2.5:7b` for complete data privacy.
+- **Flexible AI Architecture:** Supports fully local generation (e.g., Ollama `qwen3:8b`) for complete data privacy, with seamless scaling to cloud models via environment configuration.
 
 ## Tech Stack
 - **Frontend / Chat UI:** Chainlit
 - **Backend API:** FastAPI
 - **Database:** PostgreSQL (with `pgvector` and SQLAlchemy)
-- **AI / LLM:** Ollama (`qwen2.5:7b`)
+- **AI / LLM:** Provider-agnostic (Local via Ollama, e.g., `qwen3:8b`, or Cloud APIs)
 - **Embeddings & Reranking:** `nomic-embed-text` & `ms-marco-MiniLM-L-6-v2` CrossEncoder
 
 ## Setup (Local Development)

@@ -29,8 +29,8 @@ htmlcov/
 
 # User Data & Databases
 uploaded_files/
+.files/
 *.sqlite
 *.sqlite3
 *.db
 .DS_Store
-

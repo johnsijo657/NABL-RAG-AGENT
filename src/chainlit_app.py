@@ -131,11 +131,19 @@ async def main(message: cl.Message):
                     for p in pages:
                         uploaded_text += p['content'] + " "
                     uploaded_files_list.append(element.name)
+            
+            # Persist uploaded document context in session for follow-up questions
+            cl.user_session.set("uploaded_text", uploaded_text)
+            cl.user_session.set("uploaded_files_list", uploaded_files_list)
+        else:
+            # No new file uploaded — retrieve previously stored document context
+            uploaded_text = cl.user_session.get("uploaded_text") or ""
+            uploaded_files_list = cl.user_session.get("uploaded_files_list") or []
 
         # 1. Route Query
         intent = await llm_provider.route_query(query)
         
-        # If user uploaded a file, force SEARCH intent to analyze the file
+        # If user uploaded a file (or has one from earlier in session), force SEARCH intent
         if uploaded_text:
             intent = "SEARCH"
             
