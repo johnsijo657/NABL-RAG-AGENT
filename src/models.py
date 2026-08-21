@@ -46,6 +46,7 @@ class QueryLog(Base):
     response = Column(Text)
     latency_ms = Column(Float)
     sources_used = Column(Text, nullable=True)
+    model_used = Column(String, nullable=True)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     user = relationship("User", back_populates="query_logs")

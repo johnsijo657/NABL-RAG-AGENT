@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 200
     TOP_K_RESULTS: int = 5
     RERANK_TOP_N: int = 3
+    MAX_CHAT_MESSAGES: int = 10
     
     CHAINLIT_AUTH_SECRET: Optional[str] = None
     

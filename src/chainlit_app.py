@@ -14,6 +14,7 @@ from src.retrieval.hybrid_search import hybrid_search
 from src.retrieval.reranker import rerank_results
 from src.generation.ollama_provider import OllamaProvider
 from src.models import QueryLog, ChatSession, User
+from src.config import settings
 import uuid
 from src.ingestion.loader import load_pdf
 import time
@@ -102,6 +103,14 @@ async def main(message: cl.Message):
     # This function handles the incoming user message
     query = message.content
     user_identity = cl.user_session.get("user").identifier if cl.user_session.get("user") else "Unknown"
+    
+    # Check chat limit
+    history = cl.user_session.get("history") or []
+    if len(history) >= settings.MAX_CHAT_MESSAGES:
+        await cl.Message(
+            content=f"⚠️ You have reached the maximum of **{settings.MAX_CHAT_MESSAGES} messages** for this session. Please start a **New Chat** to continue."
+        ).send()
+        return
     
     # Create a thinking message
     msg = cl.Message(content="")
@@ -194,7 +203,8 @@ async def main(message: cl.Message):
             query=query,
             response=msg.content,
             latency_ms=latency_ms,
-            sources_used="; ".join(sources_list) if sources_list else "None"
+            sources_used="; ".join(sources_list) if sources_list else "None",
+            model_used=settings.OLLAMA_CHAT_MODEL
         )
         db.add(q_log)
         db.commit()
