@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, AsyncGenerator
+from typing import List, Dict, Any, AsyncGenerator, Callable, Optional
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from src.generation.base_provider import LLMProvider
@@ -46,12 +46,24 @@ CONTEXT:
         messages.append(HumanMessage(content=query))
         return messages
 
-    def generate_response(self, query: str, context: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> str:
-        messages = self._build_messages(query, context, chat_history or [])
+    def generate_response(self, query: str, chat_history: List[Dict[str, str]] = None, search_callback: Optional[Callable] = None, uploaded_images: Optional[List[str]] = None) -> str:
+        # Sync version assumes no context since callback is async
+        messages = self._build_messages(query, [], chat_history or [])
         response = self.llm.invoke(messages)
         return response.content
         
-    async def generate_response_stream(self, query: str, context: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> AsyncGenerator[str, None]:
+    async def generate_response_stream(self, query: str, chat_history: List[Dict[str, str]] = None, search_callback: Optional[Callable] = None, uploaded_images: Optional[List[str]] = None) -> AsyncGenerator[str, None]:
+        intent = await self.route_query(query)
+        context = []
+        if intent == "SEARCH" and search_callback:
+            if uploaded_images:
+                # If images exist, use expand_search_query to extract context from images if possible
+                # For now, just use the query
+                expanded_query = query
+            else:
+                expanded_query = query
+            context = await search_callback(expanded_query)
+            
         messages = self._build_messages(query, context, chat_history or [])
         async for chunk in self.llm.astream(messages):
             yield chunk.content

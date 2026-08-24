@@ -1,5 +1,5 @@
 import chainlit as cl
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any
 import sys
 from pathlib import Path
 
@@ -12,11 +12,11 @@ from src.database import SessionLocal
 from src.api.auth import verify_password, get_user
 from src.retrieval.hybrid_search import hybrid_search
 from src.retrieval.reranker import rerank_results
-from src.generation.ollama_provider import OllamaProvider
+from src.generation.provider_factory import get_llm_provider
 from src.models import QueryLog, ChatSession, User
 from src.config import settings
 import uuid
-from src.ingestion.loader import load_pdf
+from src.ingestion.loader import load_pdf, PDFTooLargeError
 import time
 import shutil
 from datetime import datetime
@@ -25,7 +25,7 @@ from chainlit.data import BaseDataLayer
 from chainlit.types import Pagination, ThreadFilter, PaginatedResponse
 
 # Initialize our LLM Provider once globally
-llm_provider = OllamaProvider()
+llm_provider = get_llm_provider(settings.LLM_PROVIDER)
 
 class DummyDataLayer(BaseDataLayer):
     """
@@ -122,7 +122,9 @@ async def main(message: cl.Message):
     try:
         # 0. Handle File Uploads
         uploaded_text = ""
+        uploaded_images = []
         uploaded_files_list = []
+        
         if message.elements:
             upload_dir = Path("uploaded_files")
             upload_dir.mkdir(exist_ok=True)
@@ -135,39 +137,34 @@ async def main(message: cl.Message):
                     
                     shutil.copy2(element.path, perm_path)
                     
-                    pages = load_pdf(str(perm_path))
-                    uploaded_text += f"\n\n--- Content from uploaded file: {element.name} ---\n"
-                    for p in pages:
-                        uploaded_text += p['content'] + " "
-                    uploaded_files_list.append(element.name)
+                    try:
+                        pages = load_pdf(str(perm_path), extract_images=True)
+                        uploaded_text += f"\n\n--- Content from uploaded file: {element.name} ---\n"
+                        for p in pages:
+                            uploaded_text += p['content'] + " "
+                            if "image_base64" in p:
+                                uploaded_images.append(p["image_base64"])
+                        uploaded_files_list.append(element.name)
+                    except PDFTooLargeError as e:
+                        msg.content = f"❌ {str(e)}"
+                        await msg.update()
+                        return
             
             # Persist uploaded document context in session for follow-up questions
             cl.user_session.set("uploaded_text", uploaded_text)
+            cl.user_session.set("uploaded_images", uploaded_images)
             cl.user_session.set("uploaded_files_list", uploaded_files_list)
         else:
             # No new file uploaded — retrieve previously stored document context
             uploaded_text = cl.user_session.get("uploaded_text") or ""
+            uploaded_images = cl.user_session.get("uploaded_images") or []
             uploaded_files_list = cl.user_session.get("uploaded_files_list") or []
 
-        # 1. Route Query
-        intent = await llm_provider.route_query(query)
-        
-        # If user uploaded a file (or has one from earlier in session), force SEARCH intent
-        if uploaded_text:
-            intent = "SEARCH"
-            
-        reranked_results = []
-        if intent == "SEARCH":
-            # Retrieve and Rank Context
-            search_query = query
-            if uploaded_text:
-                search_query = await llm_provider.expand_search_query(query, uploaded_text)
-                print(f"Agentic Query Expansion: '{query}' -> '{search_query}'")
-                
+        # 1. Define the search callback for the LLM Provider
+        async def run_search(search_query: str) -> List[Dict[str, Any]]:
             hybrid_results = hybrid_search(db, search_query, top_k=10)
             reranked_results = rerank_results(search_query, hybrid_results, top_k=5)
             
-            # Inject uploaded file text into context if it exists
             if uploaded_text:
                 reranked_results.insert(0, {
                     "content": uploaded_text,
@@ -176,11 +173,21 @@ async def main(message: cl.Message):
                     "score": 1.0,
                     "type": "upload"
                 })
-
-        # 2. Generate Answer (Streaming)
-        history = cl.user_session.get("history")
+            
+            # Store sources globally so we can log them later
+            cl.user_session.set("last_sources", [res['source'] for res in reranked_results])
+            return reranked_results
+            
+        # Reset last_sources before generation
+        cl.user_session.set("last_sources", [])
         
-        async for chunk in llm_provider.generate_response_stream(query, reranked_results, history):
+        # 2. Generate Answer (Streaming)
+        async for chunk in llm_provider.generate_response_stream(
+            query=query, 
+            chat_history=history, 
+            search_callback=run_search,
+            uploaded_images=uploaded_images
+        ):
             await msg.stream_token(chunk)
             
         await msg.update()
@@ -190,13 +197,13 @@ async def main(message: cl.Message):
         history.append({"role": "assistant", "content": msg.content})
         cl.user_session.set("history", history)
         
-        # 4. Log to DB
+        # 3. Log to DB
         latency_ms = (time.time() - start_time) * 1000
-        from src.models import User
         db_user = db.query(User).filter(User.username == user_identity).first()
         user_id = db_user.id if db_user else None
         
-        sources_list = [res['source'] for res in reranked_results]
+        sources_list = cl.user_session.get("last_sources") or []
+        model_name = settings.GROQ_CHAT_MODEL if settings.LLM_PROVIDER.lower() == "groq" else settings.OLLAMA_CHAT_MODEL
         
         q_log = QueryLog(
             user_id=user_id,
@@ -204,7 +211,7 @@ async def main(message: cl.Message):
             response=msg.content,
             latency_ms=latency_ms,
             sources_used="; ".join(sources_list) if sources_list else "None",
-            model_used=settings.OLLAMA_CHAT_MODEL
+            model_used=model_name
         )
         db.add(q_log)
         db.commit()

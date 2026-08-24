@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     OLLAMA_CHAT_MODEL: str = "qwen2.5:7b"
     OLLAMA_EMBED_MODEL: str = "nomic-embed-text"
     
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_CHAT_MODEL: str = "qwen/qwen3.6-27b"
+    
     CLOUD_API_KEY: Optional[str] = None
     CLOUD_CHAT_MODEL: Optional[str] = None
     
