@@ -1,6 +1,7 @@
 import pymupdf
 import logging
 import base64
+import re
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -24,14 +25,16 @@ def load_pdf(file_path: str, extract_images: bool = True) -> List[Dict[str, Any]
         doc = pymupdf.open(file_path)
         total_pages = len(doc)
         
-        if total_pages > 10:
-            doc.close()
-            raise PDFTooLargeError(f"PDF exceeds the maximum allowed size of 10 pages. This document has {total_pages} pages.")
+        # if total_pages > 10:
+        #     doc.close()
+        #     raise PDFTooLargeError(f"PDF exceeds the maximum allowed size of 10 pages. This document has {total_pages} pages.")
         
         for i, page in enumerate(doc):
-            text = page.get_text("text").strip()
-            # Basic cleanup: remove excessive newlines
-            text = " ".join(text.split())
+            text = page.get_text("text")
+            # Clean up whitespace per line while preserving paragraph structure
+            lines = [line.strip() for line in text.splitlines()]
+            text = "\n".join(lines)
+            text = re.sub(r'\n{3,}', '\n\n', text).strip()
             
             page_data = {
                 "page_number": i + 1,

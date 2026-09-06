@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     GROQ_API_KEY: Optional[str] = None
     GROQ_CHAT_MODEL: str = "qwen/qwen3.6-27b"
     
+    OPENROUTER_API_KEY: Optional[str] = None
+    OPENROUTER_CHAT_MODEL: str = "google/gemini-2.5-flash"
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    
     CLOUD_API_KEY: Optional[str] = None
     CLOUD_CHAT_MODEL: Optional[str] = None
     
@@ -27,6 +31,7 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 200
     TOP_K_RESULTS: int = 5
     RERANK_TOP_N: int = 3
+    RERANK_SCORE_THRESHOLD: float = -4.0
     MAX_CHAT_MESSAGES: int = 10
     
     CHAINLIT_AUTH_SECRET: Optional[str] = None

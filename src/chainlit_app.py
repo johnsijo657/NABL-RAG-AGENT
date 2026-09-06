@@ -1,6 +1,7 @@
 import chainlit as cl
 from typing import Dict, Optional, List, Any
 import sys
+import logging
 from pathlib import Path
 
 # Ensure project root is in sys.path
@@ -8,12 +9,15 @@ project_root = str(Path(__file__).parent.parent.absolute())
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+logger = logging.getLogger(__name__)
+
 from src.database import SessionLocal
 from src.api.auth import verify_password, get_user
 from src.retrieval.hybrid_search import hybrid_search
 from src.retrieval.reranker import rerank_results
+from src.retrieval.tracing import RAGPipelineTracer
 from src.generation.provider_factory import get_llm_provider
-from src.models import QueryLog, ChatSession, User
+from src.models import QueryLog, ChatSession, User, Feedback
 from src.config import settings
 import uuid
 from src.ingestion.loader import load_pdf, PDFTooLargeError
@@ -23,11 +27,17 @@ from datetime import datetime
 
 from chainlit.data import BaseDataLayer
 from chainlit.types import Pagination, ThreadFilter, PaginatedResponse
+from chainlit.auth.cookie import OAuth2PasswordBearerWithCookie
+from fastapi.openapi.models import OAuth2, OAuthFlows, OAuthFlowPassword
 
-# Initialize our LLM Provider once globally
-llm_provider = get_llm_provider(settings.LLM_PROVIDER)
+# Safeguard: prevent Chainlit's internal FastAPI app from crashing if /docs or /openapi.json is accessed on port 8002
+if not hasattr(OAuth2PasswordBearerWithCookie, "model"):
+    OAuth2PasswordBearerWithCookie.model = OAuth2(
+        flows=OAuthFlows(password=OAuthFlowPassword(tokenUrl="/login"))
+    )
 
 class DummyDataLayer(BaseDataLayer):
+
     """
     A minimal data layer to satisfy Chainlit's internal requirements 
     when authentication is enabled, preventing 'Error fetching threads'.
@@ -55,7 +65,22 @@ class DummyDataLayer(BaseDataLayer):
     async def get_thread_author(self, thread_id) -> str: return ""
     async def update_step(self, step_dict) -> None: pass
     async def update_thread(self, thread_id, name=None, user_id=None, metadata=None, tags=None) -> None: pass
-    async def upsert_feedback(self, feedback) -> None: pass
+    async def upsert_feedback(self, feedback) -> None:
+        db = SessionLocal()
+        try:
+            val = 1 if getattr(feedback, "value", 1) == 1 else -1
+            fb_record = Feedback(
+                for_id=getattr(feedback, "forId", "unknown") or "unknown",
+                value=val,
+                comment=getattr(feedback, "comment", None)
+            )
+            db.add(fb_record)
+            db.commit()
+            logger.info(f"Saved user feedback: value={val}, for_id={fb_record.for_id}")
+        except Exception as e:
+            logger.error(f"Failed to persist user feedback: {e}")
+        finally:
+            db.close()
 @cl.data_layer
 def get_data_layer():
     return DummyDataLayer()
@@ -71,6 +96,23 @@ def auth(username: str, password: str) -> Optional[cl.User]:
     finally:
         db.close()
     return None
+
+@cl.set_chat_profiles
+async def chat_profile():
+    return [
+        cl.ChatProfile(
+            name="OpenRouter",
+            markdown_description="Fast, multi-model cloud access (Gemini 2.0 Flash / Llama 3.3 / Claude) via OpenRouter.",
+        ),
+        cl.ChatProfile(
+            name="Groq",
+            markdown_description="Fast Groq LPU inference (Qwen / Llama).",
+        ),
+        cl.ChatProfile(
+            name="Ollama",
+            markdown_description="Private, local GPU/CPU execution via Ollama.",
+        ),
+    ]
 
 @cl.on_chat_start
 async def on_chat_start():
@@ -94,7 +136,7 @@ async def on_chat_start():
             db.add(new_session)
             db.commit()
     except Exception as e:
-        print(f"Failed to log chat session: {e}")
+        logger.error(f"Failed to log chat session: {e}")
     finally:
         db.close()
 
@@ -162,17 +204,12 @@ async def main(message: cl.Message):
 
         # 1. Define the search callback for the LLM Provider
         async def run_search(search_query: str) -> List[Dict[str, Any]]:
-            hybrid_results = hybrid_search(db, search_query, top_k=10)
-            reranked_results = rerank_results(search_query, hybrid_results, top_k=5)
+            tracer = RAGPipelineTracer(search_query)
+            hybrid_results = hybrid_search(db, search_query, top_k=10, tracer=tracer)
+            reranked_results = rerank_results(search_query, hybrid_results, top_k=settings.RERANK_TOP_N, tracer=tracer)
             
-            if uploaded_text:
-                reranked_results.insert(0, {
-                    "content": uploaded_text,
-                    "source": f"User Uploaded File: {', '.join(uploaded_files_list)}",
-                    "page_number": 1,
-                    "score": 1.0,
-                    "type": "upload"
-                })
+            # Persist trace data so it can be saved to QueryLog later
+            cl.user_session.set("last_trace_data", tracer.stages)
             
             # Store sources globally so we can log them later
             cl.user_session.set("last_sources", [res['source'] for res in reranked_results])
@@ -181,9 +218,23 @@ async def main(message: cl.Message):
         # Reset last_sources before generation
         cl.user_session.set("last_sources", [])
         
+        # Resolve active provider dynamically from user session profile or settings
+        selected_profile = cl.user_session.get("chat_profile")
+        active_provider = get_llm_provider(selected_profile or settings.LLM_PROVIDER)
+        
+        # Build effective query containing the uploaded document text for the LLM
+        effective_query = query
+        if uploaded_text:
+            files_label = f" ({', '.join(uploaded_files_list)})" if uploaded_files_list else ""
+            effective_query = (
+                f"{query}\n\n"
+                f"--- Content from uploaded document{files_label} ---\n"
+                f"{uploaded_text.strip()}"
+            )
+        
         # 2. Generate Answer (Streaming)
-        async for chunk in llm_provider.generate_response_stream(
-            query=query, 
+        async for chunk in active_provider.generate_response_stream(
+            query=effective_query, 
             chat_history=history, 
             search_callback=run_search,
             uploaded_images=uploaded_images
@@ -203,7 +254,7 @@ async def main(message: cl.Message):
         user_id = db_user.id if db_user else None
         
         sources_list = cl.user_session.get("last_sources") or []
-        model_name = settings.GROQ_CHAT_MODEL if settings.LLM_PROVIDER.lower() == "groq" else settings.OLLAMA_CHAT_MODEL
+        trace_data = cl.user_session.get("last_trace_data")
         
         q_log = QueryLog(
             user_id=user_id,
@@ -211,13 +262,21 @@ async def main(message: cl.Message):
             response=msg.content,
             latency_ms=latency_ms,
             sources_used="; ".join(sources_list) if sources_list else "None",
-            model_used=model_name
+            model_used=active_provider.model_name,
+            trace_data=trace_data
         )
         db.add(q_log)
         db.commit()
         
     except Exception as e:
-        msg.content = f"An error occurred: {str(e)}"
-        await msg.update()
+         logger.error(f"Error handling user message: {str(e)}", exc_info=True)
+         err_str = str(e).lower()
+         if "429" in err_str or "rate limit" in err_str:
+            msg.content = "⚠️ The system is currently experiencing high volume. Please wait a few seconds and try again."
+         elif "404" in err_str or "model_not_found" in err_str:
+            msg.content = "⚠️ Please wait a few seconds and try again."
+         else:
+            msg.content = "⚠️ I encountered an unexpected error while processing your request. Please try again in a moment."
+         await msg.update()
     finally:
         db.close()

@@ -8,26 +8,41 @@ import logging
 logger = logging.getLogger(__name__)
 
 class OllamaProvider(LLMProvider):
-    def __init__(self):
-        logger.info(f"Initializing OllamaProvider with model: {settings.OLLAMA_CHAT_MODEL}")
+    def __init__(self, model_name: Optional[str] = None):
+        self._model_name = model_name or settings.OLLAMA_CHAT_MODEL
+        logger.info(f"Initializing OllamaProvider with model: {self._model_name}")
         self.llm = ChatOllama(
-            model=settings.OLLAMA_CHAT_MODEL,
+            model=self._model_name,
             base_url=settings.OLLAMA_BASE_URL,
             # temperature=0.0 # Low temp for factual RAG
         )
+
+    @property
+    def provider_name(self) -> str:
+        return "ollama"
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
         
     def _build_messages(self, query: str, context: List[Dict[str, Any]], chat_history: List[Dict[str, str]]) -> List[Any]:
         # Construct system prompt with context
-        context_text = "\n\n---\n\n".join([f"Source: {c.get('source')}\nContent: {c.get('content')}" for c in context])
+        if not context:
+            context_text = "No matching NABL compliance rules found in knowledge base."
+        else:
+            formatted = []
+            for idx, c in enumerate(context):
+                formatted.append(f"[Source {idx + 1}: {c.get('source')}]\nContent: {c.get('content')}")
+            context_text = "\n\n---\n\n".join(formatted)
         
         system_prompt = f"""You are a helpful and polite professional assistant specialized in NABL (National Accreditation Board for Testing and Calibration Laboratories) compliance and guidelines.
 Your guidelines:
 1. GREETINGS: Respond normally and politely to general greetings.
-2. NABL & DOCUMENT ANALYSIS: If the user asks about NABL or uploads a document, analyze the document and the provided context carefully to give a well-Presented answer in simple words based ONLY on the provided context.
+2. NABL & DOCUMENT ANALYSIS: If the user asks about NABL or uploads a document, analyze the document and the provided context carefully to give a well-presented answer in simple words based ONLY on the provided context. Cite sources by standard name and clause (e.g. ISO/IEC 17025:2017, Cl 7.8).
    - Evaluate FAIRLY: First identify what the document DOES have (e.g., ULR number, test methods, authorized signatory, lab details). Then check if anything critical is genuinely missing based on the context provided.
    - Only cite a specific violation if the context explicitly states it is a mandatory requirement AND the uploaded document clearly lacks it. Do NOT assume something is missing just because the document does not explicitly mention it in detail.
    - Be balanced: a document can be compliant even if it does not contain every single element mentioned in NABL policies. Focus on what is actually required for the specific type of document being evaluated.
-3. IRRELEVANT: If the query is completely unrelated to NABL, document review, or the provided context, you must reply politely: "well I don't know about it . sorry". 
+3. IRRELEVANT: If the query is completely unrelated to NABL, document review, or if no relevant context is found in the database, you must reply politely: "I don't have information about this in my NABL knowledge base."
 4. DO NOT output raw database chunks directly to the user.
 CONTEXT:
 {context_text}"""
@@ -56,13 +71,7 @@ CONTEXT:
         intent = await self.route_query(query)
         context = []
         if intent == "SEARCH" and search_callback:
-            if uploaded_images:
-                # If images exist, use expand_search_query to extract context from images if possible
-                # For now, just use the query
-                expanded_query = query
-            else:
-                expanded_query = query
-            context = await search_callback(expanded_query)
+            context = await search_callback(query)
             
         messages = self._build_messages(query, context, chat_history or [])
         async for chunk in self.llm.astream(messages):
@@ -90,27 +99,3 @@ Output only CHAT or SEARCH."""
         if "SEARCH" in result:
             return "SEARCH"
         return "CHAT"
-        
-    async def expand_search_query(self, user_query: str, document_text: str) -> str:
-        """
-        Agentic Query Expansion: If a user uploads a document, generating a search query based on the raw prompt 
-        (e.g., 'Is this compliant?') is useless for vector search. This method extracts key entities from the 
-        document (up to 1500 chars to save time) and combines them with the user's intent to build a rich search query.
-        """
-        # Truncate document text to avoid massive token overhead for a quick routing decision
-        truncated_doc = document_text[:1500]
-        
-        expansion_prompt = f"""You are an expert search query generator.
-The user asked a question about an uploaded document.
-User's Question: "{user_query}"
-Document Extract: "{truncated_doc}"
-
-Based on the question and the document extract, generate a concise, highly targeted search query to find relevant rules in the NABL database.
-Include important keywords from the document (like ULR, test methods, subject matter) and the user's core intent.
-
-CRITICAL RULE: If the uploaded document appears to be a Test Report or Calibration Certificate, your output query MUST prominently include the exact phrases: "NABL 133 Policy for Use of NABL Symbol" and "ISO 17025 Section 7.8 Reporting of Results". This ensures we retrieve the correct formatting rules instead of generic application rules.
-
-Output ONLY the search query. Do not add quotes, prefixes, or explanations."""
-        
-        response = await self.llm.ainvoke([SystemMessage(content=expansion_prompt)])
-        return response.content.strip()

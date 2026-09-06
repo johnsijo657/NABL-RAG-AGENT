@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, AsyncGenerator, Callable, Optional, Awaitable
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from langchain_core.tools import tool
 from src.generation.base_provider import LLMProvider
@@ -11,20 +11,36 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-class GroqProvider(LLMProvider):
+class OpenRouterProvider(LLMProvider):
+    """
+    OpenRouter LLM Provider for the NABL RAG Agent.
+    Supports high-speed streaming, on-demand visual audits, and multi-model routing
+    (e.g., google/gemini-2.0-flash-001, meta-llama/llama-3.3-70b-instruct, anthropic/claude-3.5-sonnet).
+    """
     def __init__(self, model_name: Optional[str] = None):
-        self._model_name = model_name or settings.GROQ_CHAT_MODEL
-        logger.info(f"Initializing GroqProvider with model: {self._model_name}")
-        self.llm = ChatGroq(
-            api_key=settings.GROQ_API_KEY,
+        if not settings.OPENROUTER_API_KEY:
+            logger.warning("OPENROUTER_API_KEY is not set in environment or .env!")
+            
+        self._model_name = model_name or settings.OPENROUTER_CHAT_MODEL
+        logger.info(f"Initializing OpenRouterProvider with model: {self._model_name}")
+        
+        default_headers = {
+            "HTTP-Referer": "https://nabl-rag-agent.local",
+            "X-Title": "NABL RAG Agent"
+        }
+        
+        self.llm = ChatOpenAI(
+            base_url=settings.OPENROUTER_BASE_URL,
+            api_key=settings.OPENROUTER_API_KEY or "missing_key",
             model=self._model_name,
-            reasoning_format="hidden",
-            max_tokens=1000,
+            default_headers=default_headers,
+            temperature=0.1,
+            max_tokens=2000,
         )
 
     @property
     def provider_name(self) -> str:
-        return "groq"
+        return "openrouter"
 
     @property
     def model_name(self) -> str:
@@ -69,7 +85,6 @@ They need a fast, decisive answer they can act on — not a detailed audit essay
 
 ## OUTPUT TEMPLATE (always use this exact structure)
 
-
 **Verdict: [COMPLIANT / NON-COMPLIANT / PARTIALLY COMPLIANT]**
 [One sentence — the single biggest reason for this verdict, if not fully compliant]
 
@@ -87,7 +102,6 @@ They need a fast, decisive answer they can act on — not a detailed audit essay
 
 **Recommended action**
 [1-2 sentences, plain language, telling the lab exactly what to do next]
-
 
 ## Tone
 
@@ -115,7 +129,7 @@ They need a fast, decisive answer they can act on — not a detailed audit essay
             return "No uploaded document image is available in this session to inspect."
             
         try:
-            logger.info(f"Running visual inspection for aspect: '{aspect}' on {len(uploaded_images)} image(s)...")
+            logger.info(f"Running OpenRouter visual inspection for aspect: '{aspect}' on {len(uploaded_images)} image(s)...")
             image_content = [{
                 "type": "text", 
                 "text": (
@@ -141,14 +155,13 @@ They need a fast, decisive answer they can act on — not a detailed audit essay
             findings = re.sub(r'<think>.*?</think>', '', vision_res.content, flags=re.DOTALL).strip()
             return f"[Visual Document Inspection Findings]:\n{findings}"
         except Exception as e:
-            logger.error(f"Visual inspection failed: {e}")
+            logger.error(f"Visual inspection failed on OpenRouter: {e}")
             return f"Visual inspection could not be completed: {str(e)}"
 
     def generate_response(self, query: str, chat_history: List[Dict[str, str]] = None, search_callback: Optional[Callable] = None, uploaded_images: Optional[List[str]] = None) -> str:
-        raise NotImplementedError("Sync generation not fully implemented for Groq with Tool Calling.")
+        raise NotImplementedError("Sync generation not implemented for OpenRouterProvider. Use generate_response_stream.")
 
     async def generate_response_stream(self, query: str, chat_history: List[Dict[str, str]] = None, search_callback: Optional[Callable[[str], Awaitable[List[Dict[str, Any]]]]] = None, uploaded_images: Optional[List[str]] = None) -> AsyncGenerator[str, None]:
-        
         messages = [self._build_system_prompt()]
         
         # Add history
@@ -159,7 +172,7 @@ They need a fast, decisive answer they can act on — not a detailed audit essay
                 elif msg.get("role") == "assistant":
                     messages.append(AIMessage(content=msg.get("content")))
                     
-        # Send pure text query into the chat conversation (NO heavy images in the prompt!)
+        # Send pure text query into the chat conversation
         messages.append(HumanMessage(content=query))
         
         # Define tools
@@ -181,12 +194,12 @@ They need a fast, decisive answer they can act on — not a detailed audit essay
         if tools_list:
             llm_with_tools = self.llm.bind_tools(tools_list)
             
-            logger.info("Groq agent checking if tool call is needed...")
+            logger.info("OpenRouter agent checking if tool call is needed...")
             response = await llm_with_tools.ainvoke(messages)
             
             tool_calls = list(getattr(response, "tool_calls", None) or [])
             
-            # Robust XML / Text-based tool-call fallback (for Qwen/Hermes models on Groq)
+            # Robust fallback for text-based tool calls
             if not tool_calls and response.content:
                 raw_text = response.content
                 if "<tool_call>" in raw_text or "<function=" in raw_text:
@@ -216,7 +229,7 @@ They need a fast, decisive answer they can act on — not a detailed audit essay
                                 pass
                                 
             if tool_calls:
-                logger.info(f"Executing tool calls: {tool_calls}")
+                logger.info(f"OpenRouter executing tool calls: {tool_calls}")
                 ai_msg = AIMessage(content="", tool_calls=tool_calls)
                 messages.append(ai_msg)
                 
@@ -248,7 +261,7 @@ They need a fast, decisive answer they can act on — not a detailed audit essay
                             content=visual_findings
                         ))
             else:
-                # Direct answer without tools (e.g. greeting or direct knowledge)
+                # Direct answer without tools
                 if response.content:
                     cleaned_content = re.sub(r'<think>.*?(</think>|$)', '', response.content, flags=re.DOTALL)
                     cleaned_content = re.sub(r'<tool_call>.*?(</tool_call>|$)', '', cleaned_content, flags=re.DOTALL).strip()

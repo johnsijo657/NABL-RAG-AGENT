@@ -9,10 +9,17 @@ class CloudProvider(LLMProvider):
     Stub for a future Cloud Provider (e.g., OpenAI, Anthropic, Google Vertex).
     Demonstrates the Strategy Pattern.
     """
-    def __init__(self):
+    def __init__(self, model_name: str = "cloud-stub"):
         logger.info("Initializing CloudProvider (Stub)")
-        # Initialize cloud client here
-        pass
+        self._model_name = model_name
+
+    @property
+    def provider_name(self) -> str:
+        return "cloud"
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
 
     def generate_response(self, query: str, context: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> str:
         return "This is a response from the Cloud Provider stub."

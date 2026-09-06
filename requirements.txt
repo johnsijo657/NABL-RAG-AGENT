@@ -16,3 +16,4 @@ pyjwt
 passlib[bcrypt]
 langchain-groq
 Pillow
+langchain-openai
